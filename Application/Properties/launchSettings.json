@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Application": {
+      "commandName": "Project",
+      "commandLineArgs": "mirror %MyGetSource% http://localhost:5555/v3/index.json NUGET-SERVER-API-KEY"
+    }
+  }
+}
