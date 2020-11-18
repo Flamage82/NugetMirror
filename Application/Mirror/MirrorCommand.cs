@@ -44,23 +44,27 @@ namespace NugetMirror.Application.Mirror
                 var sourceVersions = await sourceFindPackageByIdResource.GetAllVersionsAsync(sourcePackage.Identity.Id, cache, logger, cancellationToken);
                 var destinationVersions = await destinationFindPackageByIdResource.GetAllVersionsAsync(sourcePackage.Identity.Id, cache, logger, cancellationToken);
 
-                foreach (var version in sourceVersions.Except(destinationVersions))
-                {
-                    Log.Information("Uploading {Package}.{Version}", sourcePackage.Identity.Id, version);
-                    var path = $"{tempPath}{sourcePackage.Identity.Id.ToLower()}.{version.ToString().ToLower()}.nupkg";
-                    await using (var fileStream = File.Create(path))
-                    {
-                        var isSuccessful = await sourceFindPackageByIdResource.CopyNupkgToStreamAsync(sourcePackage.Identity.Id, version, fileStream, cache, logger, cancellationToken);
-                        if (!isSuccessful)
+                await sourceVersions
+                    .Except(destinationVersions)
+                    .ForEachInParallelAsync(
+                        settings.MaxDegreeOfParallelism,
+                        async version =>
                         {
-                            Log.Warning("Failed to upload {Package}.{Version}", sourcePackage.Identity.Id, version);
-                        }
-                    }
+                            Log.Information("Uploading {Package}.{Version}", sourcePackage.Identity.Id, version);
+                            var path = $"{tempPath}{sourcePackage.Identity.Id.ToLower()}.{version.ToString().ToLower()}.nupkg";
+                            await using (var fileStream = File.Create(path))
+                            {
+                                var isSuccessful = await sourceFindPackageByIdResource.CopyNupkgToStreamAsync(sourcePackage.Identity.Id, version, fileStream, cache, logger, cancellationToken);
+                                if (!isSuccessful)
+                                {
+                                    Log.Warning("Failed to upload {Package}.{Version}", sourcePackage.Identity.Id, version);
+                                }
+                            }
 
-                    await packageUpdateResource.Push(path, null, settings.UploadTimeout, false, _ => settings.ApiKey, null, false, true, null, logger);
+                            await packageUpdateResource.Push(path, null, settings.UploadTimeout, false, _ => settings.ApiKey, null, false, true, null, logger);
 
-                    File.Delete(path);
-                }
+                            File.Delete(path);
+                        });
             }
 
             Log.Information("Mirror complete!");

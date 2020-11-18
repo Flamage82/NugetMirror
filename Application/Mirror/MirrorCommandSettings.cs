@@ -25,5 +25,10 @@ namespace NugetMirror.Application.Mirror
         [Description("The timeout in seconds for uploading each package")]
         [DefaultValue(300)]
         public int UploadTimeout { get; set; }
+
+        [CommandOption("-t|--threads <Threads>")]
+        [Description("How many uploads to run in parallel")]
+        [DefaultValue(1)]
+        public int MaxDegreeOfParallelism { get; set; }
     }
 }
