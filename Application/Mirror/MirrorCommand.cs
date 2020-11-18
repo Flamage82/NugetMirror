@@ -1,9 +1,11 @@
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
+using NuGet.Versioning;
 using Serilog;
 using Spectre.Cli;
 using ILogger = NuGet.Common.ILogger;
@@ -37,38 +39,44 @@ namespace NugetMirror.Application.Mirror
 
             Log.Information("Querying source...");
             var sourcePackages = await packageSearchResource.SearchAsync(settings.SearchTerm, new SearchFilter(true), 0, int.MaxValue, logger, cancellationToken);
-            foreach (var sourcePackage in sourcePackages)
-            {
-                Log.Information("Processing {Package}", sourcePackage.Identity.Id);
 
-                var sourceVersions = await sourceFindPackageByIdResource.GetAllVersionsAsync(sourcePackage.Identity.Id, cache, logger, cancellationToken);
-                var destinationVersions = await destinationFindPackageByIdResource.GetAllVersionsAsync(sourcePackage.Identity.Id, cache, logger, cancellationToken);
-
-                await sourceVersions
-                    .Except(destinationVersions)
-                    .ForEachInParallelAsync(
-                        settings.MaxDegreeOfParallelism,
-                        async version =>
+            var packageVersionsToUpload = GetPackageVersionsToUpload(sourcePackages);
+            await packageVersionsToUpload.ForEachInParallelAsync(
+                settings.MaxDegreeOfParallelism,
+                async packageVersion =>
+                {
+                    var (packageId, version) = packageVersion;
+                    Log.Information("Uploading {Package}.{Version}", packageId, version);
+                    var path = $"{tempPath}{packageId.ToLower()}.{version.ToString().ToLower()}.nupkg";
+                    await using (var fileStream = File.Create(path))
+                    {
+                        var isSuccessful = await sourceFindPackageByIdResource.CopyNupkgToStreamAsync(packageId, version, fileStream, cache, logger, cancellationToken);
+                        if (!isSuccessful)
                         {
-                            Log.Information("Uploading {Package}.{Version}", sourcePackage.Identity.Id, version);
-                            var path = $"{tempPath}{sourcePackage.Identity.Id.ToLower()}.{version.ToString().ToLower()}.nupkg";
-                            await using (var fileStream = File.Create(path))
-                            {
-                                var isSuccessful = await sourceFindPackageByIdResource.CopyNupkgToStreamAsync(sourcePackage.Identity.Id, version, fileStream, cache, logger, cancellationToken);
-                                if (!isSuccessful)
-                                {
-                                    Log.Warning("Failed to upload {Package}.{Version}", sourcePackage.Identity.Id, version);
-                                }
-                            }
+                            Log.Warning("Failed to upload {Package}.{Version}", packageId, version);
+                        }
+                    }
 
-                            await packageUpdateResource.Push(path, null, settings.UploadTimeout, false, _ => settings.ApiKey, null, false, true, null, logger);
+                    await packageUpdateResource.Push(path, null, settings.UploadTimeout, false, _ => settings.ApiKey, null, false, true, null, logger);
 
-                            File.Delete(path);
-                        });
-            }
+                    File.Delete(path);
+                });
 
             Log.Information("Mirror complete!");
             return 0;
+
+            async IAsyncEnumerable<(string PackageId, NuGetVersion Version)> GetPackageVersionsToUpload(IEnumerable<IPackageSearchMetadata> packages)
+            {
+                foreach (var package in packages)
+                {
+                    var sourceVersions = await sourceFindPackageByIdResource.GetAllVersionsAsync(package.Identity.Id, cache, logger, cancellationToken);
+                    var destinationVersions = await destinationFindPackageByIdResource.GetAllVersionsAsync(package.Identity.Id, cache, logger, cancellationToken);
+                    foreach (var version in sourceVersions.Except(destinationVersions))
+                    {
+                        yield return (PackageId: package.Identity.Id, Version: version);
+                    }
+                }
+            }
         }
     }
 }
