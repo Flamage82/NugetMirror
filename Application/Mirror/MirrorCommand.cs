@@ -40,12 +40,34 @@ namespace NugetMirror.Application.Mirror
             Log.Information("Querying source...");
             var sourcePackages = await packageSearchResource.SearchAsync(settings.SearchTerm, new SearchFilter(true), 0, int.MaxValue, logger, cancellationToken);
 
-            var packageVersionsToUpload = GetPackageVersionsToUpload(sourcePackages);
-            await packageVersionsToUpload.ForEachInParallelAsync(
+            var packagesToUpgrade = new List<(string PackageId, NuGetVersion Version, int Index)>();
+            await sourcePackages
+                .Select(metadata => metadata.Identity.Id)
+                .OrderBy(packageId => packageId)
+                .ForEachInParallelAsync(
+                    settings.MaxDegreeOfParallelism,
+                    async packageId =>
+                    {
+                        Log.Information("Scanning {Package}", packageId);
+                        var sourceVersions = await sourceFindPackageByIdResource.GetAllVersionsAsync(packageId, cache, logger, cancellationToken);
+                        var destinationVersions = await destinationFindPackageByIdResource.GetAllVersionsAsync(packageId, cache, logger, cancellationToken);
+                        var versionsToUpgrade = sourceVersions
+                            .Except(destinationVersions)
+                            .OrderByDescending(version => version)
+                            .Select((version, index) => (PackageId: packageId, Version: version, Index: index));
+                        packagesToUpgrade.AddRange(versionsToUpgrade);
+                    });
+
+            Log.Information("There are {Count} packages to upload", packagesToUpgrade.Count);
+
+            await packagesToUpgrade
+                .OrderBy(package => package.Index)
+                .ThenBy(package => package.PackageId)
+                .ForEachInParallelAsync(
                 settings.MaxDegreeOfParallelism,
                 async packageVersion =>
                 {
-                    var (packageId, version) = packageVersion;
+                    var (packageId, version, _) = packageVersion;
                     Log.Information("Uploading {Package}.{Version}", packageId, version);
                     var path = $"{tempPath}{packageId.ToLower()}.{version.ToString().ToLower()}.nupkg";
                     await using (var fileStream = File.Create(path))
@@ -64,19 +86,6 @@ namespace NugetMirror.Application.Mirror
 
             Log.Information("Mirror complete!");
             return 0;
-
-            async IAsyncEnumerable<(string PackageId, NuGetVersion Version)> GetPackageVersionsToUpload(IEnumerable<IPackageSearchMetadata> packages)
-            {
-                foreach (var package in packages)
-                {
-                    var sourceVersions = await sourceFindPackageByIdResource.GetAllVersionsAsync(package.Identity.Id, cache, logger, cancellationToken);
-                    var destinationVersions = await destinationFindPackageByIdResource.GetAllVersionsAsync(package.Identity.Id, cache, logger, cancellationToken);
-                    foreach (var version in sourceVersions.Except(destinationVersions))
-                    {
-                        yield return (PackageId: package.Identity.Id, Version: version);
-                    }
-                }
-            }
         }
     }
 }
