@@ -1,4 +1,5 @@
 using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using NuGet.Common;
 using NuGet.Protocol.Core.Types;
@@ -14,26 +15,37 @@ namespace NugetMirror.Application
     {
         public static async Task<int> Main(string[] args)
         {
+            var configuration = new ConfigurationBuilder()
+                .AddJsonFile("appsettings.json")
+                .Build();
+
             Log.Logger = new LoggerConfiguration()
+                .ReadFrom.Configuration(configuration)
                 .Enrich.FromLogContext()
-                .WriteTo.Console()
                 .CreateLogger();
 
-            var services = new ServiceCollection();
-
-            services.AddLogging(loggingBuilder => loggingBuilder.AddSerilog(dispose: true));
-
-            services.AddSingleton(provider => new SourceCacheContext { NoCache = true });
-            services.AddTransient<ILogger, Logger>(provider => new Logger(LogLevel.Minimal));
-
-            using var registrar = new DependencyInjectionRegistrar(services);
-            var app = new CommandApp(registrar);
-            app.Configure(config =>
+            try
             {
-                config.AddCommand<MirrorCommand>("mirror");
-            });
+                var services = new ServiceCollection();
 
-            return await app.RunAsync(args);
+                services.AddLogging(loggingBuilder => loggingBuilder.AddSerilog(dispose: true));
+
+                services.AddSingleton(_ => new SourceCacheContext { NoCache = true });
+                services.AddTransient<ILogger, Logger>(_ => new Logger(LogLevel.Minimal));
+
+                using var registrar = new DependencyInjectionRegistrar(services);
+                var app = new CommandApp(registrar);
+                app.Configure(config =>
+                {
+                    config.AddCommand<MirrorCommand>("mirror");
+                });
+
+                return await app.RunAsync(args);
+            }
+            finally
+            {
+                Log.CloseAndFlush();
+            }
         }
     }
 }

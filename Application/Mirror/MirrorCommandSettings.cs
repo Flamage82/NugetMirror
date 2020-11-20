@@ -30,5 +30,13 @@ namespace NugetMirror.Application.Mirror
         [Description("How many uploads to run in parallel")]
         [DefaultValue(1)]
         public int MaxDegreeOfParallelism { get; set; }
+
+        [CommandOption("-b|--bidirectional")]
+        [Description("Mirror packages in both directions")]
+        public bool Bidirectional { get; set; }
+
+        [CommandOption("--mirror-all")]
+        [Description("Mirror all packages to the destination, rather than just those that are more recent than the destination's current version")]
+        public bool MirrorOldVersions { get; set; }
     }
 }
