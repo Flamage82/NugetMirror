@@ -38,5 +38,9 @@ namespace NugetMirror.Application.Mirror
         [CommandOption("--mirror-all")]
         [Description("Mirror all packages to the destination, rather than just those that are more recent than the destination's current version")]
         public bool MirrorOldVersions { get; set; }
+
+        [CommandOption("--dry-run")]
+        [Description("Dryrun mode - disables downloading and uploading of packages")]
+        public bool IsDryRunEnabled { get; set; }
     }
 }

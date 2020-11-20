@@ -70,6 +70,11 @@ namespace NugetMirror.Application.Mirror
                         async packageVersion =>
                         {
                             Log.Information("Uploading {Package}.{Version}", packageVersion.Id, packageVersion.Version);
+                            if (settings.IsDryRunEnabled)
+                            {
+                                return;
+                            }
+
                             var path = $"{tempPath}{packageVersion.Id.ToLower()}.{packageVersion.Version.ToString().ToLower()}.nupkg";
                             await using (var fileStream = File.Create(path))
                             {
