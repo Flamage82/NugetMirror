@@ -11,12 +11,22 @@ namespace NugetMirror.Application
         public static async Task ForEachInParallelAsync<T>(this IEnumerable<T> enumerable, int degreeOfParallelism, Func<T, Task> action)
         {
             var throttler = new SemaphoreSlim(degreeOfParallelism);
+            var source = new CancellationTokenSource();
             var tasks = enumerable.Select(async item =>
             {
                 try
                 {
-                    await throttler.WaitAsync();
+                    await throttler.WaitAsync(source.Token);
+                    if (source.IsCancellationRequested)
+                    {
+                        return;
+                    }
                     await action(item);
+                }
+                catch
+                {
+                    source.Cancel();
+                    throw;
                 }
                 finally
                 {

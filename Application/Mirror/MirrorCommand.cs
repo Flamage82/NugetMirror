@@ -31,9 +31,28 @@ namespace NugetMirror.Application.Mirror
             var cancellationToken = CancellationToken.None;
 
             Log.Verbose("Querying source packages");
-            var (leftRepository, leftFindPackageByIdResource, leftPackages, leftPackageVersions) = await GetRepositoryPackages(settings.Source);
+            var (leftRepository, leftFindPackageByIdResource, leftPackages) = await GetRepositoryPackages(settings.Source);
             Log.Verbose("Querying destination packages");
-            var (rightRepository, rightFindPackageByIdResource, rightPackages, rightPackageVersions) = await GetRepositoryPackages(settings.Destination);
+            var (rightRepository, rightFindPackageByIdResource, rightPackages) = await GetRepositoryPackages(settings.Destination);
+
+            var packageIdsToMirror =
+                leftPackages.Union(rightPackages)
+                .Select(metadata => metadata.Identity.Id)
+                .Distinct()
+                .ToList();
+            if (!settings.MirrorOldVersions)
+            {
+                packageIdsToMirror = packageIdsToMirror.Where(packageId =>
+                    {
+                        var leftPackage = leftPackages.SingleOrDefault(package => package.Identity.Id == packageId);
+                        var rightPackage = rightPackages.SingleOrDefault(package => package.Identity.Id == packageId);
+                        return leftPackage?.Identity.Version != rightPackage?.Identity.Version;
+                    })
+                    .ToList();
+            }
+
+            var leftPackageVersions = await GetPackageVersions(leftFindPackageByIdResource, leftPackages).ToListAsync(cancellationToken);
+            var rightPackageVersions = await GetPackageVersions(rightFindPackageByIdResource, rightPackages).ToListAsync(cancellationToken);
 
             Log.Information("Mirroring packages to the destination");
             await MirrorPackages(leftFindPackageByIdResource, rightRepository, Filter(leftPackageVersions, rightPackages), rightPackageVersions);
@@ -76,22 +95,27 @@ namespace NugetMirror.Application.Mirror
                             }
 
                             var path = $"{tempPath}{packageVersion.Id.ToLower()}.{packageVersion.Version.ToString().ToLower()}.nupkg";
-                            await using (var fileStream = File.Create(path))
+                            try
                             {
-                                var isSuccessful = await sourceFindPackageByIdResource.CopyNupkgToStreamAsync(packageVersion.Id, packageVersion.Version, fileStream, cache, logger, cancellationToken);
-                                if (!isSuccessful)
+                                await using (var fileStream = File.Create(path))
                                 {
-                                    Log.Warning("Failed to upload {Package}.{Version}", packageVersion.Id, packageVersion.Version);
+                                    var isSuccessful = await sourceFindPackageByIdResource.CopyNupkgToStreamAsync(packageVersion.Id, packageVersion.Version, fileStream, cache, logger, cancellationToken);
+                                    if (!isSuccessful)
+                                    {
+                                        Log.Warning("Failed to upload {Package}.{Version}", packageVersion.Id, packageVersion.Version);
+                                    }
                                 }
+
+                                await packageUpdateResource.Push(path, null, settings.UploadTimeout, false, _ => settings.ApiKey, null, false, true, null, logger);
                             }
-
-                            await packageUpdateResource.Push(path, null, settings.UploadTimeout, false, _ => settings.ApiKey, null, false, true, null, logger);
-
-                            File.Delete(path);
+                            finally
+                            {
+                                File.Delete(path);
+                            }
                         });
             }
 
-            async Task<(SourceRepository Repository, FindPackageByIdResource FindPackageByIdResource, List<IPackageSearchMetadata> Packages, List<PackageVersion> PackageVersions)> GetRepositoryPackages(string source)
+            async Task<(SourceRepository Repository, FindPackageByIdResource FindPackageByIdResource, List<IPackageSearchMetadata> Packages)> GetRepositoryPackages(string source)
             {
                 var repository = Repository.Factory.GetCoreV3(source);
                 var packageSearchResource = await repository.GetResourceAsync<PackageSearchResource>(cancellationToken);
@@ -100,14 +124,12 @@ namespace NugetMirror.Application.Mirror
                     .OrderBy(metadata => metadata.Identity.Id)
                     .ToList();
 
-                var packageVersions = GetPackageVersions(findPackageByIdResource, packages);
-
-                return (repository, findPackageByIdResource, packages, await packageVersions.ToListAsync(cancellationToken));
+                return (repository, findPackageByIdResource, packages);
             }
 
             async IAsyncEnumerable<PackageVersion> GetPackageVersions(FindPackageByIdResource findPackageByIdResource, IEnumerable<IPackageSearchMetadata> packages)
             {
-                foreach (var package in packages)
+                foreach (var package in packages.Where(package => packageIdsToMirror.Contains(package.Identity.Id)))
                 {
                     var packageId = package.Identity.Id;
                     Log.Verbose("Getting package versions for {Package}", packageId);
